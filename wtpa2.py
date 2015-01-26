@@ -4,6 +4,9 @@ import aifc
 import struct
 import stat
 import platform
+from tempfile import mkstemp
+from subprocess import call
+from distutils import spawn
 
 class WTPA2:
 	r"""WTPA2 Sample Packer/Unpacker
@@ -15,6 +18,7 @@ class WTPA2:
 		self.num_samples = 0
 		self.toc_offset = 16
 		self.header = bytearray(512)
+		self.sox_cmd = spawn.find_executable("sox") # False to disable
 
 	def pack(self, outfile, infiles):
 		r""" Pack AIFF samples into the WTPA2 format.
@@ -159,6 +163,10 @@ class WTPA2:
 		try:
 			s = aifc.open(path)
 
+			if self.sox_cmd and (s.getsampwidth() != 1 or s.getnchannels() != 1 or s.getframerate() != 22050):
+				self.soxify_and_process_file(path)
+				return
+
 			if s.getsampwidth() != 1:
 				print("    SKIPPED: Sample width = {}, should be 1.".format(s.getsampwidth()))
 			elif s.getnchannels() != 1:
@@ -180,8 +188,23 @@ class WTPA2:
 		
 			s.close()
 		except aifc.Error:
-			print("    SKIPPED: Not an AIFF".format(path))
+			if self.sox_cmd:
+				self.soxify_and_process_file(path)
+			else:
+				print("    SKIPPED: Not an AIFF".format(path))
 			pass
+
+	def soxify(self, path):
+		print("    Soxifying".format(path))
+		fd, temp_aiff_path = mkstemp(".aiff")
+		call([self.sox_cmd, path, "-b 8", "-r 22050", "-c 1", temp_aiff_path])
+		os.close(fd)
+		return temp_aiff_path
+
+	def soxify_and_process_file(self, path):
+		path = self.soxify(path)
+		self.process_file(path)
+		os.remove(path)
 
 
 def slot_type(x):
