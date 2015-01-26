@@ -4,7 +4,8 @@ import aifc
 import struct
 import stat
 import platform
-from tempfile import mkstemp
+from tempfile import NamedTemporaryFile
+from contextlib import closing
 from subprocess import call
 from distutils import spawn
 
@@ -39,6 +40,31 @@ class WTPA2:
 					self.process_file(infile)
 			else:
 				print("{} does not exist, skipping...".format(infile))
+
+		self.outfile.seek(0)
+		self.outfile.write(self.header)
+		self.outfile.close()
+
+	def packmap(self, outfile, mapfile):
+		r""" Pack AIFF samples into the WTPA2 format, mapped to midi notes.
+
+		outfile is the file to be written. mapfile is a txt file with one
+		filename per line where each line-1 corresponds to a sample slot.
+		"""
+		self.header[0:3] = "WTPA"
+		self.header[4:7] = "SAMP"
+		self.outfile = open(outfile, "wb")
+		self.outfile.seek(512)
+
+		with closing(open(mapfile, "r")) as f:
+			infiles = f.readlines()
+
+		for infile in infiles:
+			infile = infile.strip()
+			if infile and os.path.exists(infile):
+				self.process_file(infile) or self.skip_current_slot()
+			else:
+				self.skip_current_slot()
 
 		self.outfile.seek(0)
 		self.outfile.write(self.header)
@@ -161,50 +187,56 @@ class WTPA2:
 		print("Processing file {}...".format(path))
 
 		try:
-			s = aifc.open(path)
+			with closing(aifc.open(path)) as s:
+				if self.sox_cmd and (s.getsampwidth() != 1 or s.getnchannels() != 1 or s.getframerate() != 22050):
+					return self.soxify_and_process_file(path)
 
-			if self.sox_cmd and (s.getsampwidth() != 1 or s.getnchannels() != 1 or s.getframerate() != 22050):
-				self.soxify_and_process_file(path)
-				return
+				if s.getsampwidth() != 1:
+					print("    SKIPPED: Sample width = {}, should be 1.".format(s.getsampwidth()))
+					return False
+				elif s.getnchannels() != 1:
+					print("    SKIPPED: Number of channels = {}, should be 1.".format(s.getnchannels()))
+					return False
+				elif s.getnframes() > 512*1024:
+					print("    SKIPPED: Sample too long, length = {}, max is {}.".format(s.getnframes(), 512*1024))
+					return False
+				else:
+					if s.getframerate() != 22050:
+						print("    WARNING: Incorrect sample rate, rate = {} target is 22050".format(s.getframerate()))
 
-			if s.getsampwidth() != 1:
-				print("    SKIPPED: Sample width = {}, should be 1.".format(s.getsampwidth()))
-			elif s.getnchannels() != 1:
-				print("    SKIPPED: Number of channels = {}, should be 1.".format(s.getnchannels()))
-			elif s.getnframes() > 512*1024:
-				print("    SKIPPED: Sample too long, length = {}, max is {}.".format(s.getnframes(), 512*1024))
-			else:
-				if s.getframerate() != 22050:
-					print("    WARNING: Incorrect sample rate, rate = {} target is 22050".format(s.getframerate()))
+					self.outfile.write(struct.pack('>I', s.getnframes()))
+					self.outfile.write(s.readframes(s.getnframes()))
+					self.outfile.seek(512*1024 - s.getnframes() - 4, 1)
 
-				print("    OK: Wrote sample to slot {}".format(self.num_samples))
+					self.header[self.toc_offset + ((self.num_samples)/8)] |= (1 << (self.num_samples%8))
+					self.num_samples+=1
 
-				self.header[self.toc_offset + ((self.num_samples)/8)] |= (1 << (self.num_samples%8))
-				self.num_samples+=1
+					print("    OK: Wrote sample to slot {}".format(self.num_samples-1))
 
-				self.outfile.write(struct.pack('>I', s.getnframes()))
-				self.outfile.write(s.readframes(s.getnframes()))
-				self.outfile.seek(512*1024 - s.getnframes() - 4, 1)
-		
-			s.close()
+					return True
+
 		except aifc.Error:
 			if self.sox_cmd:
-				self.soxify_and_process_file(path)
+				return self.soxify_and_process_file(path)
 			else:
 				print("    SKIPPED: Not an AIFF".format(path))
+				return False
 			pass
 
 	def soxify(self, path):
 		print("    Soxifying".format(path))
-		fd, temp_aiff_path = mkstemp(".aiff")
-		call([self.sox_cmd, path, "-b 8", "-r 22050", "-c 1", temp_aiff_path])
-		os.close(fd)
-		return temp_aiff_path
+		temp_aiff = NamedTemporaryFile(mode='w+b', suffix='.aiff', delete=True)
+		call([self.sox_cmd, path, "-b 8", "-r 22050", "-c 1", temp_aiff.name])
+		return temp_aiff
 
 	def soxify_and_process_file(self, path):
-		path = self.soxify(path)
-		self.process_file(path)
-		os.remove(path)
+		with closing(self.soxify(path)) as temp_aiff:
+			return self.process_file(temp_aiff.name)
+
+	def skip_current_slot(self):
+		print("Skipping slot {}".format(self.num_samples))
+		self.header[self.toc_offset + ((self.num_samples)/8)] |= 0
+		self.num_samples+=1
 
 
 def slot_type(x):
@@ -220,6 +252,10 @@ p_parser = sparsers.add_parser("pack", help="pack AIFFs into a WTPA2 readable bi
 p_parser.add_argument("outfile", type=str, help="output file name")
 p_parser.add_argument("infiles", nargs="+", type=str, help="input directories/files")
 
+m_parser = sparsers.add_parser("packmap", help="pack AIFFs into a WTPA2 readable binary file with map file")
+m_parser.add_argument("outfile", type=str, help="output file name")
+m_parser.add_argument("mapfile", type=str, help="map file name")
+
 e_parser = sparsers.add_parser("extract", help="extract samples from a WTPA2 formatted binary file or device")
 e_parser.add_argument("-s", "--slots", default=512, type=slot_type, help="limit sample slots read")
 e_parser.add_argument("src", type=str, help="input file or path to device")
@@ -231,5 +267,7 @@ wtpa = WTPA2()
 
 if args.command == "pack":	
 	wtpa.pack(args.outfile, args.infiles)
+elif args.command == "packmap":
+	wtpa.packmap(args.outfile, args.mapfile)
 elif args.command == "extract":
 	wtpa.unpack(args.src, args.dest, samples=args.slots)
