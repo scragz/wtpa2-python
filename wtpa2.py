@@ -237,6 +237,7 @@ class WTPA2:
 		print("Skipping slot {}".format(self.num_samples))
 		self.header[self.toc_offset + ((self.num_samples)/8)] |= 0
 		self.num_samples+=1
+		self.seek_to_slot(self.num_samples)
 
 
 def slot_type(x):
