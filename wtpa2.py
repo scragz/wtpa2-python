@@ -42,7 +42,7 @@ class WTPA2:
 				print("{} does not exist, skipping...".format(infile))
 
 		self.outfile.seek(0)
-		self.outfile.write(self.header)
+		self.outfile.write(self.header[0:512])
 		self.outfile.close()
 
 	def packmap(self, outfile, mapfile):
