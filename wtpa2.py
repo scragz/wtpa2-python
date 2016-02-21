@@ -1,3 +1,8 @@
+from sys import version_info
+if version_info < (2,7):
+  print("Python version mismatch! Currently only Python 2.7+ is supported.")
+  print('')
+
 import argparse
 import os
 import aifc
@@ -27,8 +32,8 @@ class WTPA2:
 		outfile is the file to be written. infiles is a list of files and 
 		directories to process for AIFFs in the proper format.
 		"""
-		self.header[0:3] = "WTPA"
-		self.header[4:7] = "SAMP"
+		self.header[0:3] = b"WTPA"
+		self.header[4:7] = b"SAMP"
 		self.outfile = open(outfile, "wb")
 		self.outfile.seek(512)
 		
@@ -51,8 +56,8 @@ class WTPA2:
 		outfile is the file to be written. mapfile is a txt file with one
 		filename per line where each line-1 corresponds to a sample slot.
 		"""
-		self.header[0:3] = "WTPA"
-		self.header[4:7] = "SAMP"
+		self.header[0:3] = b"WTPA"
+		self.header[4:7] = b"SAMP"
 		self.outfile = open(outfile, "wb")
 		self.outfile.seek(512)
 
@@ -114,9 +119,9 @@ class WTPA2:
 			self.outfile = open(src, "rb")
 			self.header = self.outfile.read(512)
 
-			if self.header[0:4] != "WTPA":
+			if self.header[0:4] != b"WTPA":
 				print("ERROR: WTPA data not found.")
-			elif self.header[4:8] != "SAMP":
+			elif self.header[4:8] != b"SAMP":
 				print("ERROR: WTPA Sample data not found.")
 			else:
 				for x in range(0, samples):
@@ -148,7 +153,10 @@ class WTPA2:
 	def sample_in_slot(self, slot):
 		r""" Returns true if the header indicates a sample is present in the target slot.
 		"""
-		if ord(self.header[self.toc_offset  + (slot/8)]) & (1 << slot):
+		toc = self.header[ int( self.toc_offset  + (slot/8) ) ]
+		if type(toc) is str: # 2.7 gives a binary string, 3.0 is an int
+		  toc = ord( toc )
+		if toc & 1 << slot:
 			return True
 		else:
 			return False
@@ -208,7 +216,7 @@ class WTPA2:
 					self.outfile.write(s.readframes(s.getnframes()))
 					self.outfile.seek(512*1024 - s.getnframes() - 4, 1)
 
-					self.header[self.toc_offset + ((self.num_samples)/8)] |= (1 << (self.num_samples%8))
+					self.header[ int( self.toc_offset + ((self.num_samples)/8) ) ] |= (1 << (self.num_samples%8))
 					self.num_samples+=1
 
 					print("    OK: Wrote sample to slot {}".format(self.num_samples-1))
@@ -235,7 +243,7 @@ class WTPA2:
 
 	def skip_current_slot(self):
 		print("Skipping slot {}".format(self.num_samples))
-		self.header[self.toc_offset + ((self.num_samples)/8)] |= 0
+		self.header[ int( self.toc_offset + ((self.num_samples)/8) ) ] |= 0
 		self.num_samples+=1
 		self.seek_to_slot(self.num_samples)
 
